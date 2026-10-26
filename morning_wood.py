@@ -6,8 +6,6 @@ This script reads the session transcripts itself and passes a short digest in th
 The brief is rendered to HTML, and a desktop notification opens it.
 """
 
-from __future__ import annotations
-
 import sys
 
 if sys.version_info < (3, 11):
@@ -25,8 +23,8 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from dataclasses import dataclass, field, fields
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
 
@@ -36,7 +34,8 @@ HERE = Path(__file__).resolve().parent
 HOME = Path.home()
 IS_MAC = sys.platform == "darwin"
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / APP
+XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+CONFIG_DIR = XDG_CONFIG / APP
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 CLAUDE_HOME = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 
@@ -73,13 +72,16 @@ def load_config() -> Config:
     if not CONFIG_FILE.exists():
         return cfg
     data = tomllib.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    known = {f.name for f in fields(Config)}
-    unknown = sorted(set(data) - known)
-    if unknown:
-        sys.exit(f"Unknown keys in {CONFIG_FILE}: {', '.join(unknown)}")
     for key, value in data.items():
-        if key in ("workdir", "output_dir"):
-            value = Path(value).expanduser()
+        default = getattr(cfg, key, None)
+        if default is None:
+            sys.exit(f"{CONFIG_FILE}: unknown key '{key}'")
+        expected = str if isinstance(default, Path) else type(default)
+        if not isinstance(value, expected) or (expected is list and not all(isinstance(v, str) for v in value)):
+            sys.exit(f"{CONFIG_FILE}: '{key}' must be a {expected.__name__}")
+        if isinstance(default, Path):
+            # "~/x" and absolute paths stay as they are; a relative path is relative to home.
+            value = HOME / Path(value).expanduser()
         setattr(cfg, key, value)
     return cfg
 
@@ -100,16 +102,18 @@ def require(name: str) -> str:
 
 
 def workdays_before(day: date, count: int) -> date:
-    while count:
+    while count > 0:
         day -= timedelta(days=1)
         if day.weekday() < 5:
             count -= 1
     return day
 
 
-def text_of(content) -> str:
+def text_of(content: object) -> str:
     if isinstance(content, str):
         return content
+    if not isinstance(content, list):
+        return ""
     return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
 
 
@@ -123,8 +127,8 @@ def session_digest(path: Path, since: datetime) -> str | None:
 
     The transcript format is internal to Claude Code. Unknown records are skipped.
     """
-    default_title = path.stem[:8]
-    title, cwd, branch = default_title, "", ""
+    titles: dict[str, str] = {}
+    cwd = branch = ""
     prompts: list[str] = []
     replies: list[str] = []
     with path.open(encoding="utf-8", errors="replace") as lines:
@@ -136,11 +140,8 @@ def session_digest(path: Path, since: datetime) -> str | None:
             if not isinstance(rec, dict):
                 continue
             kind = rec.get("type")
-            if kind == "custom-title":
-                title = rec.get("customTitle") or title
-                continue
-            if kind == "ai-title" and title == default_title:
-                title = rec.get("aiTitle") or title
+            if kind in ("custom-title", "ai-title"):
+                titles[kind] = rec.get("customTitle") or rec.get("aiTitle") or ""
                 continue
             if kind not in ("user", "assistant") or rec.get("isSidechain") or rec.get("isMeta"):
                 continue
@@ -148,6 +149,8 @@ def session_digest(path: Path, since: datetime) -> str | None:
                 stamp = datetime.fromisoformat(rec["timestamp"])
             except (KeyError, TypeError, ValueError):
                 continue
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
             if stamp < since:
                 continue
             text = text_of((rec.get("message") or {}).get("content", "")).strip()
@@ -163,6 +166,7 @@ def session_digest(path: Path, since: datetime) -> str | None:
 
     if not prompts and not replies:
         return None
+    title = titles.get("custom-title") or titles.get("ai-title") or path.stem[:8]
     out = [f"## {title}", f"project: {cwd}  branch: {branch}", "user asked:"]
     out += [f"- {p}" for p in prompts[-MAX_PROMPTS:]]
     out.append("assistant said last:")
@@ -211,6 +215,8 @@ def tool_prefix(server: str) -> str:
 
 
 def run_claude(cfg: Config, prompt: str) -> str:
+    if not cfg.workdir.is_dir():
+        raise RuntimeError(f"workdir does not exist: {cfg.workdir}")
     cmd = [
         require("claude"), "-p",
         "--output-format", "json",
@@ -342,19 +348,23 @@ THEME_JS = """
 """
 
 
-# Pandoc's own Markdown reader, close to GitHub's. Raw HTML in the model's output becomes text.
-# (The gfm reader ignores -raw_html in some Pandoc versions.) The other switches stop Pandoc
-# from reading "@name" as a citation, "~/a … ~/b" as subscript and "$5 … $6" as maths.
-PANDOC_READER = (
-    "markdown-raw_html-raw_attribute-raw_tex-tex_math_dollars-citations-subscript-superscript-smart"
-    "+lists_without_preceding_blankline+autolink_bare_uris"
-)
+# Pandoc's own Markdown reader, close to GitHub's, with the risky extensions off. Raw HTML and
+# "{...}" attributes in the model's output become text, a "---" block is never metadata, "@name"
+# is not a citation, "~a~" and "^a^" are not sub- or superscript, and "$5 … $6" is not maths.
+# (The gfm reader ignores -raw_html in some Pandoc versions.) blank_before_header is off, so a
+# heading right after a text line is still a heading.
+PANDOC_READER = "markdown" + "".join(f"-{ext}" for ext in (
+    "raw_html", "raw_attribute", "raw_tex", "link_attributes", "header_attributes",
+    "fenced_code_attributes", "inline_code_attributes", "bracketed_spans", "fenced_divs",
+    "yaml_metadata_block", "pandoc_title_block", "citations", "subscript", "superscript",
+    "tex_math_dollars", "smart", "blank_before_header",
+)) + "+lists_without_preceding_blankline+autolink_bare_uris"
 
 
 def content_security_policy() -> str:
-    # Only our own inline script may run. Text from Jira or the model cannot add scripts.
+    # Only our own inline script may run. The page loads nothing from the network, not even images.
     digest = base64.b64encode(hashlib.sha256(THEME_JS.encode()).digest()).decode()
-    return f"default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; script-src 'sha256-{digest}'"
+    return f"default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{digest}'"
 
 
 def render_html(markdown: str, out: Path, today: date) -> None:
@@ -392,7 +402,10 @@ def notification_lines(markdown: str) -> list[str]:
 
 
 def open_brief(path: Path) -> None:
-    opener = "open" if IS_MAC else which("sensible-browser") or "xdg-open"
+    opener = "open" if IS_MAC else which("sensible-browser") or which("xdg-open")
+    if not opener:
+        print(f"No browser opener found. Open the brief yourself: {path}", file=sys.stderr)
+        return
     cmd = [opener, path.as_uri()]
     # Inside a systemd service, a separate scope keeps the browser alive after the service exits.
     if not IS_MAC and os.environ.get("INVOCATION_ID") and which("systemd-run"):
@@ -448,7 +461,7 @@ def notify_macos(title: str, lines: list[str], open_path: Path | None) -> None:
 
 # --- Scheduler ---------------------------------------------------------------------------------
 
-SYSTEMD_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "systemd/user"
+SYSTEMD_DIR = XDG_CONFIG / "systemd/user"
 LAUNCHD_LABEL = f"local.{APP}"
 LAUNCHD_PLIST = HOME / "Library/LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 MAC_LOG = HOME / "Library/Logs" / f"{APP}.log"
@@ -495,7 +508,7 @@ def install(hour: int, minute: int) -> None:
 
     SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
     (SYSTEMD_DIR / f"{APP}.service").write_text(
-        "[Unit]\nDescription=Claude morning brief\nAfter=network-online.target\n\n"
+        "[Unit]\nDescription=Claude morning brief\n\n"
         "[Service]\nType=oneshot\n"
         f"Environment={systemd_quote('PATH=' + path)}\n"
         f"ExecStart={systemd_quote(sys.executable)} {systemd_quote(str(script))} run\n",
@@ -530,10 +543,10 @@ def uninstall() -> None:
 
 def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     now = datetime.now().astimezone()
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
     md_path = cfg.output_dir / f"{now.date()}.md"
     html_path = cfg.output_dir / f"{now.date()}.html"
     try:
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
         markdown = run_claude(cfg, build_prompt(cfg, now))
         md_path.write_text(markdown, encoding="utf-8")
         render_html(markdown, html_path, now.date())
@@ -567,7 +580,7 @@ def cmd_check(cfg: Config) -> int:
         report(bool(which("terminal-notifier")), "terminal-notifier (optional: click to open the brief)", False)
     else:
         report(bool(which("notify-send")), f"notify-send: {which('notify-send') or 'not found'}")
-        report(bool(which("systemctl")), "systemctl (needed for the schedule)")
+        report(bool(which("systemctl")), "systemctl (needed for install)", False)
     report((CLAUDE_HOME / "projects").is_dir(), f"session transcripts: {CLAUDE_HOME / 'projects'}", False)
     report(cfg.workdir.is_dir(), f"workdir: {cfg.workdir}")
     if claude and cfg.workdir.is_dir():

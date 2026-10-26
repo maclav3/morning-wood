@@ -118,9 +118,11 @@ The script, not Claude, reads your session transcripts. It sends Claude a short 
 
 The HTML page also protects itself:
 
-- Raw HTML in Claude's output appears as text.
+- Raw HTML and `{…}` attributes in Claude's output appear as text.
 - Only `http` and `https` links stay clickable.
-- A Content Security Policy lets only the theme script run.
+- A Content Security Policy lets only the theme script run, and the page loads nothing from the network.
+
+`tests/test_morning_wood.py` checks these rules against hostile Markdown.
 
 ## What leaves your computer
 
@@ -134,12 +136,21 @@ The HTML page also protects itself:
 |---|---|
 | A "Morning brief failed" notification | Linux: `journalctl --user -u morning-wood`. macOS: `~/Library/Logs/morning-wood.log`. |
 | The Jira tile is empty or says it cannot reach Jira | Run `check`. Then run `claude` in `workdir`, type `/mcp` and log in again. |
-| No notification on Linux | Check that `notify-send hello` works in your desktop session. |
-| The notification does not open the brief | On Linux, update libnotify. On macOS, install `terminal-notifier`. |
+| No notification on Linux | Check that `notify-send hello` works in your desktop session. The click action needs libnotify 0.7.9 or later. With an older version, `notify-send` fails and the brief is only written to `output_dir`. |
+| The notification does not open the brief on macOS | Install `terminal-notifier`. |
 | Nothing ran at the scheduled time | Linux: `systemctl --user list-timers morning-wood.timer`. macOS: `launchctl print gui/$(id -u)/local.morning-wood`. |
+| It failed right after the computer woke up | The network was not up yet. Run it again: `systemctl --user start morning-wood` (Linux) or `launchctl kickstart gui/$(id -u)/local.morning-wood` (macOS). |
 
 The session digest reads Claude Code's transcript files. Their format is internal to Claude Code and can change.
 If the **Recent sessions** tile goes empty after a Claude Code update, please open an issue.
+
+## Development
+
+```sh
+python3 -m unittest discover tests
+```
+
+The render tests need pandoc. The other tests need nothing.
 
 ## Licence
 
