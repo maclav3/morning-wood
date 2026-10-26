@@ -52,9 +52,16 @@ DEFAULT_JIRA_TOOLS = [
 
 MAX_PROMPTS = 8
 MAX_REPLIES = 3
+MAX_LINKS = 10
 PROMPT_CHARS = 300
 REPLY_CHARS = 600
 DIGEST_CHARS = 80_000
+
+# GitHub pull requests and GitLab merge requests (on any GitLab host). Claude may only link
+# a PR or MR whose URL it has seen, so the digest lists the ones each session mentions.
+CODE_REVIEW_URL = re.compile(
+    r"https://(?:github\.com/[\w.-]+/[\w.-]+/pull/\d+|[\w.-]+(?:/[\w.-]+)+/-/merge_requests/\d+)"
+)
 
 
 @dataclass
@@ -131,6 +138,7 @@ def session_digest(path: Path, since: datetime) -> str | None:
     cwd = branch = ""
     prompts: list[str] = []
     replies: list[str] = []
+    links: dict[str, None] = {}  # An ordered set: the last-mentioned URL comes last.
     with path.open(encoding="utf-8", errors="replace") as lines:
         for line in lines:
             try:
@@ -153,6 +161,10 @@ def session_digest(path: Path, since: datetime) -> str | None:
                 stamp = stamp.replace(tzinfo=timezone.utc)
             if stamp < since:
                 continue
+            # Search the whole record, so URLs in tool output (glab, gh, git push) count too.
+            for url in CODE_REVIEW_URL.findall(line):
+                links.pop(url, None)
+                links[url] = None
             text = text_of((rec.get("message") or {}).get("content", "")).strip()
             # Skip slash-command echoes, system reminders and other wrapped content.
             if not text or text.startswith("<"):
@@ -171,6 +183,8 @@ def session_digest(path: Path, since: datetime) -> str | None:
     out += [f"- {p}" for p in prompts[-MAX_PROMPTS:]]
     out.append("assistant said last:")
     out += [f"- {r}" for r in replies[-MAX_REPLIES:]]
+    if links:
+        out.append("links: " + " ".join(list(links)[-MAX_LINKS:]))
     return "\n".join(out)
 
 
@@ -248,6 +262,8 @@ DARK_VARS = """
   --attention: #ff8a65; --attention-tint: #3a2730;
   --jira: #6ea2ff; --jira-tint: #22304f;
   --sessions: #3dd6a8; --sessions-tint: #1b3a37;
+  --gitlab: #fbbf24; --gitlab-tint: #3a2f12;
+  --github: #b392f0; --github-tint: #2d2443;
 """
 
 CSS = """
@@ -259,6 +275,8 @@ CSS = """
   --attention: #f2603d; --attention-tint: #fff0eb;
   --jira: #2f6fe4; --jira-tint: #eaf1ff;
   --sessions: #0fa37f; --sessions-tint: #e6f8f2;
+  --gitlab: #b45309; --gitlab-tint: #fef3c7;
+  --github: #8250df; --github-tint: #f1ebfd;
 }
 /* The theme switch sets data-theme on <html>. Without it, the system theme decides. */
 :root[data-theme="dark"] { __DARK_VARS__ }
@@ -302,11 +320,16 @@ li::marker { color: var(--c); }
 strong { color: var(--c); }
 a { color: var(--c); font-weight: 600; text-decoration: none; }
 a:hover { text-decoration: underline; }
-/* Jira keys at the start of a line look like small badges. */
-#jira li > a:first-child { background: var(--tint); padding: 1px 8px; border-radius: 999px;
-  font-size: 14px; white-space: nowrap; }
+/* Jira issues, GitLab merge requests and GitHub pull requests are badges in every tile. */
+a[href*="/browse/"], a[href*="/-/merge_requests/"], a[href^="https://github.com/"][href*="/pull/"] {
+  padding: 1px 8px; border-radius: 999px; font-size: 14px; white-space: nowrap; }
+a[href*="/browse/"] { color: var(--jira); background: var(--jira-tint); }
+a[href*="/-/merge_requests/"] { color: var(--gitlab); background: var(--gitlab-tint); }
+a[href^="https://github.com/"][href*="/pull/"] { color: var(--github); background: var(--github-tint); }
 code { font: 14px ui-monospace, "JetBrains Mono", monospace; background: var(--tint);
   color: var(--fg); padding: 1px 5px; border-radius: 5px; }
+/* Session headings are project paths: keep their case. */
+#recent-sessions h3 { text-transform: none; letter-spacing: 0; }
 h3 code { text-transform: none; letter-spacing: 0; background: none; padding: 0; color: var(--c); }
 em { color: var(--soft); }
 """.replace("__DARK_VARS__", DARK_VARS)

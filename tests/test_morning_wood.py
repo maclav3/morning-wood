@@ -90,6 +90,21 @@ class SessionDigestTest(unittest.TestCase):
             "## latest title\nproject: /p  branch: main\nuser asked:\n- do the thing\nassistant said last:\n- done",
         )
 
+    def test_lists_pr_and_mr_urls_last_mentioned_last(self):
+        mr = "https://gitlab.example.com/group/sub/project/-/merge_requests/42"
+        pr = "https://github.com/owner/repo/pull/7"
+        records = [
+            {"type": "user", "timestamp": "2026-10-26T08:00:00Z", "message": {"content": f"look at {pr}"}},
+            # A tool result: no text block, but its URL still counts.
+            {"type": "user", "timestamp": "2026-10-26T08:00:01Z",
+             "message": {"content": [{"type": "tool_result", "content": f"Created {mr}\n"}]}},
+            {"type": "assistant", "timestamp": "2026-10-26T08:00:02Z",
+             "message": {"content": [{"type": "text", "text": f"{pr} is merged"}]}},
+            {"type": "user", "timestamp": "2026-10-01T08:00:00Z",
+             "message": {"content": "old https://github.com/owner/repo/pull/1"}},
+        ]
+        self.assertTrue(self.digest(records).endswith(f"\nlinks: {mr} {pr}"))
+
     def test_custom_title_wins_and_empty_session_is_none(self):
         records = [
             {"type": "ai-title", "aiTitle": "generated"},

@@ -1,5 +1,7 @@
 # morning-wood
 
+> Fills your `~/briefs` with something hard to ignore.
+
 A morning brief for developers who work with Claude Code and Jira.
 
 Every weekday, at a time you choose, morning-wood:
@@ -126,7 +128,7 @@ The HTML page also protects itself:
 
 ## What leaves your computer
 
-- The session digest goes to Claude: the last prompts and replies of each recent session, cut short.
+- The session digest goes to Claude: the last prompts and replies of each recent session, cut short, and the GitHub PR and GitLab MR URLs each session mentions. Claude uses those URLs to link PRs and MRs in the brief.
 - Claude sends your Jira queries to your Jira server through the MCP server.
 - Run `python3 morning_wood.py prompt` to see exactly what is sent.
 
