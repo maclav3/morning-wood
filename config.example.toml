@@ -1,0 +1,30 @@
+# morning-wood configuration.
+# Location: ~/.config/morning-wood/config.toml (or $XDG_CONFIG_HOME/morning-wood/config.toml).
+# Every key is optional. The values below are the defaults.
+
+# Name of your Jira MCP server, exactly as `claude mcp list` shows it.
+# Examples: "atlassian", "claude.ai Atlassian".
+mcp_server = "atlassian"
+
+# Folder that Claude runs in. Change it only when the MCP server is configured
+# with project or local scope: then set it to that project's folder.
+# workdir = "~/code/my-project"
+
+# Read-only Jira tools that Claude may call, without the mcp__<server>__ prefix.
+# The defaults fit the Atlassian remote server (https://mcp.atlassian.com/v1/mcp).
+# For another server, list its read-only search and get tools instead.
+jira_tools = [
+  "getAccessibleAtlassianResources",
+  "atlassianUserInfo",
+  "searchJiraIssuesUsingJql",
+  "getJiraIssue",
+]
+
+# Where the .md and .html briefs go.
+output_dir = "~/briefs"
+
+# How many workdays of Claude Code sessions go into the brief.
+workdays_back = 3
+
+# Claude model, for example "sonnet". Empty means your Claude Code default.
+model = ""
