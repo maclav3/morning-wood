@@ -58,7 +58,7 @@ Each brief is one Claude run. It uses your Claude plan or your API credits.
 ## Install
 
 ```sh
-git clone https://github.com/<you>/morning-wood.git
+git clone https://github.com/maclav3/morning-wood.git
 cd morning-wood
 python3 morning_wood.py check            # checks the prerequisites
 python3 morning_wood.py run --open       # writes today's brief and opens it
